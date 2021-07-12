@@ -12,10 +12,10 @@
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
-//#define DEBUG_MODE
+#define DEBUG_MODE
 //#define DEBUG_STEERING
 #define DEBUG_ACC
-#define DRAW_POLYGON
+//#define DRAW_POLYGON
 
 using namespace std;
 using namespace cv;
@@ -29,7 +29,8 @@ public:
     -0.005, -1e-4, -0.01
     -0.003, -0.00005, -0.005 speed > 50 km/h
     -0.006, -0.00005, -0.001 low speed*/
-    LaneAssistant() : steeringControll( -0.003, -0.00005, -0.005 )
+    LaneAssistant()
+        : steeringControll( -0.003, -0.00005, -0.005 ), throttleControll( -0.003, -0.00005, -0.005 )
     {
         left_last_fparam = 0;
         right_last_fparam = 0;
@@ -38,15 +39,37 @@ public:
         center_of_lane = 360;
         leftlane_detected = rightlane_detected = true;
         curr_time = 0.;
+        throttle_input = 0.;
+        min_distance = numeric_limits<double>::max();
     }
 
     // do stuff with data
     // send results via socket
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
-        // cout << "width_of_image = " << width << endl;
+        set_steering_input( socket );
+        set_throttle_input( socket );
+        return true;
+    }
+    void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
+    {
+        double err = min_distance - 5;
+        throttleControll.UpdateErrorTerms( err );
+        throttle_input = throttleControll.OutputToActuator( 1. );
+        if( throttle_input > 1 )
+            throttle_input = 1;
+        if( throttle_input < 0 )
+            throttle_input = 0;
+        string prefix = "throttle,";
+        socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
+
+    }
+
+	void set_steering_input(tronis::CircularMultiQueuedSocket& socket)
+    {
+		 // cout << "width_of_image = " << width << endl;
         double err = 0.;
-        if( abs( width / 2. - center_of_lane ) > 0 )
+        if( abs( width / 2. - center_of_lane ) > 1e-2 )
             err = width / 2. - center_of_lane;
         steeringControll.UpdateErrorTerms( err );
         double steering = steeringControll.OutputToActuator( 0.5 );
@@ -116,23 +139,32 @@ public:
         cout << "center_of_lane = " << center_of_lane << endl;
         cout << "steering is " << steering << endl;
 #endif
-
-        return true;
-    }
+   
+	}
 
 protected:
+
+    // lane detection
     std::string image_name_;
     cv::Mat image_, grey_image;
     int width, height;  // size of under half of image
     Vec3f left_last_fparam, right_last_fparam;
-    tronis::LocationSub ego_location_;
-    tronis::OrientationSub ego_orientation_;
-    double ego_velocity_;
+
+    // lane keeping
     double center_of_lane;
     double steering;
     PidController steeringControll;
     bool leftlane_detected, rightlane_detected;
     double curr_time;
+
+    // adaptive cruise controll
+    tronis::LocationSub ego_location_;
+    tronis::OrientationSub ego_orientation_;
+    double ego_velocity_;
+    double throttle_input;
+    double min_distance;
+    vector<double> all_distance;
+    PidController throttleControll;
 
     int last_left_max, last_right_min;  // used for plot a more stable lane
 
@@ -432,17 +464,40 @@ protected:
     {
         ego_location_ = msg->Location;
         ego_orientation_ = msg->Orientation;
-        ego_velocity_ = msg->Velocity;
+        ego_velocity_ = msg->Velocity * 3.6 * 1e-2; // in Km/h 
 #ifdef DEBUG_ACC
-        cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
-             << ego_orientation_.ToString() << "\n ego_velocity is " << ego_velocity_ << endl;
+        //cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
+        //     << ego_orientation_.ToString() << "\n ego_velocity is " << ego_velocity_ << endl;
 #endif
         return true;
     }
 
-    bool processObject( tronis::BoxDataSub* SensorData)
+    bool processObject( tronis::BoxDataSub* sensorData )
     {
         // process data from ObjectListsSensor
+        for( size_t i = 0; i < sensorData->Objects.size(); i++ )
+        {
+            const tronis::ObjectSub& object = sensorData->Objects[i];
+#ifdef DEBUG_ACC
+            cout << object.ActorName.Value() << " at ";
+            cout << object.Pose.Location.ToString() << endl;
+#endif
+            tronis::LocationSub location = object.Pose.Location;
+            tronis::QuaternionSub orientation = object.Pose.Quaternion;
+            float pos_x = location.X / 100;
+            float pos_y = location.Y / 100;
+            double dist = sqrt( pow( pos_x, 2 ) + pow( pos_y, 2 ) );
+            float angle = atan( pos_y / pos_x );
+            min_distance = min( dist, min_distance );
+            if( object.Type )
+            {
+            }
+            else
+            {
+                if( dist < 2 && angle < CV_PI / 4 )
+                    throttle_input = 0.;
+            }
+        }
 
         return true;
     }
