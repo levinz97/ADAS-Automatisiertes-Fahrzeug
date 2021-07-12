@@ -8,10 +8,13 @@
 #include <communication/multi_socket.h>
 #include <models/tronis/ImageFrame.h>
 #include <grabber/opencv_tools.hpp>
+#include <models/tronis/BoxData.h>
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
 //#define DEBUG_MODE
+//#define DEBUG_STEERING
+#define DEBUG_ACC
 #define DRAW_POLYGON
 
 using namespace std;
@@ -32,7 +35,7 @@ public:
         right_last_fparam = 0;
         width = height = 0;
         last_left_max = last_right_min = 0;
-        center_of_lane = 0;
+        center_of_lane = 360;
         leftlane_detected = rightlane_detected = true;
         curr_time = 0.;
     }
@@ -41,10 +44,7 @@ public:
     // send results via socket
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
-        // PidController steeringControll( -0.25, -0.001, -5 );
-        // PidController steeringControll( 0.5, 0.05, 0.001 );
         // cout << "width_of_image = " << width << endl;
-        cout << "center_of_lane = " << center_of_lane << endl;
         double err = 0.;
         if( abs( width / 2. - center_of_lane ) > 0 )
             err = width / 2. - center_of_lane;
@@ -110,9 +110,13 @@ public:
         //}
 
         socket.send( tronis::SocketData( prefix + to_string( steering ) ) );
-        //if( int( curr_time ) % 100 == 0 )
+        // if( int( curr_time ) % 100 == 0 )
         //    steeringControll.setZero();
+#ifdef DEBUG_STEERING
+        cout << "center_of_lane = " << center_of_lane << endl;
         cout << "steering is " << steering << endl;
+#endif
+
         return true;
     }
 
@@ -361,7 +365,7 @@ protected:
         if( typeOfLines == "left" )
         {
             start_point_x = 0;
-            end_point_x = last_left_max + 0.05 * ( fit->max_x - last_left_max );
+            end_point_x = last_left_max + 0.1 * ( fit->max_x - last_left_max );
 
 #ifdef DEBUG_MODE
             end_point_x = fit->max_x;
@@ -370,7 +374,7 @@ protected:
         }
         else
         {
-            start_point_x = last_right_min + 0.05 * ( fit->min_x - last_right_min );
+            start_point_x = last_right_min + 0.1 * ( fit->min_x - last_right_min );
 
 #ifdef DEBUF_MODE
             start_point_x = fit->min_x;
@@ -429,15 +433,17 @@ protected:
         ego_location_ = msg->Location;
         ego_orientation_ = msg->Orientation;
         ego_velocity_ = msg->Velocity;
+#ifdef DEBUG_ACC
+        cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
+             << ego_orientation_.ToString() << "\n ego_velocity is " << ego_velocity_ << endl;
+#endif
         return true;
     }
 
-    bool processObject()
+    bool processObject( tronis::BoxDataSub* SensorData)
     {
-        // do stuff
+        // process data from ObjectListsSensor
 
-
-		
         return true;
     }
 
@@ -495,7 +501,7 @@ public:
                 }
                 case tronis::TronisDataType::Object:
                 {
-                    processObject();
+                    processObject( data_model.get_typed<tronis::BoxDataSub>() );
                     break;
                 }
                 default:
