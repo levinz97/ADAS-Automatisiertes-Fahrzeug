@@ -14,7 +14,7 @@
 #include "PidController.hpp"
 #define DEBUG_MODE
 //#define DEBUG_STEERING
-#define DEBUG_ACC
+//#define DEBUG_ACC
 //#define DRAW_POLYGON
 
 using namespace std;
@@ -22,7 +22,6 @@ using namespace cv;
 
 class LaneAssistant
 {
-    // insert your custom functions and algorithms here
 public:
     /*steering pid controller based on speed
         Kp,		Ki,		Kd
@@ -37,10 +36,11 @@ public:
         width = height = 0;
         last_left_max = last_right_min = 0;
         center_of_lane = 360;
-        leftlane_detected = rightlane_detected = true;
+        is_leftlane_detected = is_rightlane_detected = true;
         curr_time = 0.;
         throttle_input = 0.;
         min_distance = numeric_limits<double>::max();
+        brake = false;
     }
 
     // do stuff with data
@@ -62,12 +62,11 @@ public:
             throttle_input = 0;
         string prefix = "throttle,";
         socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
-
     }
 
-	void set_steering_input(tronis::CircularMultiQueuedSocket& socket)
+    void set_steering_input( tronis::CircularMultiQueuedSocket& socket )
     {
-		 // cout << "width_of_image = " << width << endl;
+        // cout << "width_of_image = " << width << endl;
         double err = 0.;
         if( abs( width / 2. - center_of_lane ) > 1e-2 )
             err = width / 2. - center_of_lane;
@@ -95,12 +94,12 @@ public:
         //    }
         //}
         // last_direction_sign = steering > 0;
-        if( !leftlane_detected && rightlane_detected )
+        if( !is_leftlane_detected && is_rightlane_detected )
         {
             steering = -0.3;
             steeringControll.setZero();
         }
-        if( !rightlane_detected && leftlane_detected )
+        if( !is_rightlane_detected && is_leftlane_detected )
         {
             steering = 0.3;
             steeringControll.setZero();
@@ -139,11 +138,9 @@ public:
         cout << "center_of_lane = " << center_of_lane << endl;
         cout << "steering is " << steering << endl;
 #endif
-   
-	}
+    }
 
 protected:
-
     // lane detection
     std::string image_name_;
     cv::Mat image_, grey_image;
@@ -154,7 +151,7 @@ protected:
     double center_of_lane;
     double steering;
     PidController steeringControll;
-    bool leftlane_detected, rightlane_detected;
+    bool is_leftlane_detected, is_rightlane_detected;
     double curr_time;
 
     // adaptive cruise controll
@@ -165,6 +162,7 @@ protected:
     double min_distance;
     vector<double> all_distance;
     PidController throttleControll;
+    bool brake;
 
     int last_left_max, last_right_min;  // used for plot a more stable lane
 
@@ -224,8 +222,8 @@ protected:
         fillPoly( test_roi, ppt_h, npt_h, 1, Scalar( 0 ) );
         // showImage( "region of interest", region_of_interest );
         showImage( "region of interest", test_roi );
-        Mat original = image_.clone();
-        imshow( "original input", original );
+        // Mat original = image_.clone();
+        // imshow( "original input", original );
         // waitKey();
 #endif
 
@@ -293,8 +291,8 @@ protected:
 #endif
         CurveFitting* fit_L_ptr = generate_oneLine( left_lines, "left" );
         CurveFitting* fit_R_ptr = generate_oneLine( right_lines, "right" );
-        leftlane_detected = ( fit_L_ptr != nullptr );
-        rightlane_detected = ( fit_R_ptr != nullptr );
+        is_leftlane_detected = ( fit_L_ptr != nullptr );
+        is_rightlane_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
         draw_polygon( fit_L_ptr, fit_R_ptr );
@@ -355,7 +353,7 @@ protected:
         color = typeOfLines == "right" ? Scalar( 100, 100, 255 ) : Scalar( 255, 100, 0 );
         for( auto point : lines )
         {
-            circle( image_, point, 10, color, 3 );
+            circle( image_, point, 10, color, 2 );
         }
         // imshow( typeOfLines + " points", image_ );
         // waitKey();
@@ -464,9 +462,9 @@ protected:
     {
         ego_location_ = msg->Location;
         ego_orientation_ = msg->Orientation;
-        ego_velocity_ = msg->Velocity * 3.6 * 1e-2; // in Km/h 
+        ego_velocity_ = msg->Velocity * 3.6 * 1e-2;  // in Km/h
 #ifdef DEBUG_ACC
-        //cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
+        // cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
         //     << ego_orientation_.ToString() << "\n ego_velocity is " << ego_velocity_ << endl;
 #endif
         return true;
@@ -478,24 +476,29 @@ protected:
         for( size_t i = 0; i < sensorData->Objects.size(); i++ )
         {
             const tronis::ObjectSub& object = sensorData->Objects[i];
-#ifdef DEBUG_ACC
-            cout << object.ActorName.Value() << " at ";
-            cout << object.Pose.Location.ToString() << endl;
-#endif
+
             tronis::LocationSub location = object.Pose.Location;
             tronis::QuaternionSub orientation = object.Pose.Quaternion;
+            string actorName = object.ActorName.Value();
             float pos_x = location.X / 100;
             float pos_y = location.Y / 100;
             double dist = sqrt( pow( pos_x, 2 ) + pow( pos_y, 2 ) );
             float angle = atan( pos_y / pos_x );
-            min_distance = min( dist, min_distance );
-            if( object.Type )
+            //if( actorName.find( "Hatchback" ) == string::npos )
+            //    break;
+
+            if( object.Type == 1)
             {
+#ifdef DEBUG_ACC
+                cout << actorName << " at ";
+                cout << object.Pose.Location.ToString() << endl;
+#endif
+                min_distance = min( dist, min_distance );
             }
             else
             {
                 if( dist < 2 && angle < CV_PI / 4 )
-                    throttle_input = 0.;
+                    brake = true;
             }
         }
 
@@ -554,13 +557,14 @@ public:
                     processPoseVelocity( data_model.get_typed<tronis::PoseVelocitySub>() );
                     break;
                 }
-                case tronis::TronisDataType::Object:
+                case tronis::TronisDataType::BoxData:
                 {
+                    cout << "Object detected !" << endl;
                     processObject( data_model.get_typed<tronis::BoxDataSub>() );
                     break;
                 }
                 default:
-                {
+                {	
                     std::cout << data_model->ToString() << std::endl;
                     break;
                 }
