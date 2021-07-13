@@ -41,7 +41,6 @@ public:
     float max_x, min_x;  // used to plot the lane on screen
     cv::Vec3f param, delta_param;
 
-
 	const std::vector<cv::Point2f> points;
     int param_size, number_of_points;
     double err, sumResidual, last_sumResidual;
