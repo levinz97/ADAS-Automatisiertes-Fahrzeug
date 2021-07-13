@@ -12,7 +12,7 @@
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
-#define DEBUG_MODE
+//#define DEBUG_MODE
 //#define DEBUG_STEERING
 #define DEBUG_ACC
 //#define DRAW_POLYGON
@@ -29,8 +29,8 @@ public:
     -0.003, -0.00005, -0.005 speed > 50 km/h
     -0.006, -0.00005, -0.001 low speed*/
     LaneAssistant()
-        : steeringControll( -0.003, -0.00005, -0.005 ),
-          speedControll( -0.003, -0.00005, -0.005 ),
+        : steeringControll( -0.003, -0.000005, -0.005 ),
+          speedControll( -0.02, -0.00005, -0.005 ),
           distanceControll( -0.003, -0.00005, -0.005 )
     {
         left_last_fparam = 0;
@@ -55,9 +55,22 @@ public:
     }
     void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
     {
-        double speed_err = ego_velocity_ - 50;
-        speedControll.UpdateErrorTerms( speed_err );
-        throttle_input = speedControll.OutputToActuator( 1. );
+        cout << "min_distance is " << min_distance << endl;
+        // if distance to the front car is more than 20m, only control the speed
+        if( min_distance > 20 || ego_velocity_ > 30 )
+        {
+            cout << "clear to go " << endl;
+            double speed_err = ego_velocity_ - 30;  // error in km/h
+            speedControll.UpdateErrorTerms( speed_err );
+            throttle_input = speedControll.OutputToActuator( 0.5 );
+        }
+        else
+        {
+            double dist_err = 15 - min_distance;
+            distanceControll.UpdateErrorTerms( dist_err );
+            throttle_input = distanceControll.OutputToActuator( 0.6 );
+        }
+
 #ifdef DEBUG_ACC
         cout << "throttle input is " << throttle_input << endl;
         // throttle_input = 1.;
@@ -479,9 +492,10 @@ protected:
 
     bool processObject( tronis::BoxDataSub* sensorData )
     {
-        cout << sensorData->Objects.size() << endl;
+        size_t num_of_objects = sensorData->Objects.size();
         // process data from ObjectListsSensor
-        for( size_t i = 0; i < sensorData->Objects.size(); i++ )
+        min_distance = numeric_limits<double>::max();
+        for( size_t i = 0; i < num_of_objects; i++ )
         {
             const tronis::ObjectSub& object = sensorData->Objects[i];
 
@@ -501,16 +515,21 @@ protected:
 #ifdef DEBUG_ACC
                 cout << actorName << " at ";
                 cout << object.Pose.Location.ToString() << endl;
+                cout << "angle is " << angle << endl;
 #endif
-                min_distance = min( dist, min_distance );
+                if( abs( angle ) > CV_PI * 25 / 180. )
+                    continue;
+                if( abs( pos_y ) < 10 )
+                {
+                    min_distance = min( dist, min_distance );
+                }
             }
             else
             {
-                if( dist < 2 && angle < CV_PI / 4 )
+                if( dist < 2 && abs( angle ) < CV_PI * 10 / 180. )
                     brake = true;
             }
         }
-
         return true;
     }
 
@@ -568,7 +587,7 @@ public:
                 }
                 case tronis::TronisDataType::BoxData:
                 {
-                    cout << "Object detected !" << endl;
+                    // cout << "Object detected !" << endl;
                     processObject( data_model.get_typed<tronis::BoxDataSub>() );
                     break;
                 }
