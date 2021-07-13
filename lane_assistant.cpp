@@ -14,7 +14,7 @@
 #include "PidController.hpp"
 #define DEBUG_MODE
 //#define DEBUG_STEERING
-//#define DEBUG_ACC
+#define DEBUG_ACC
 //#define DRAW_POLYGON
 
 using namespace std;
@@ -29,7 +29,9 @@ public:
     -0.003, -0.00005, -0.005 speed > 50 km/h
     -0.006, -0.00005, -0.001 low speed*/
     LaneAssistant()
-        : steeringControll( -0.003, -0.00005, -0.005 ), throttleControll( -0.003, -0.00005, -0.005 )
+        : steeringControll( -0.003, -0.00005, -0.005 ),
+          speedControll( -0.003, -0.00005, -0.005 ),
+          distanceControll( -0.003, -0.00005, -0.005 )
     {
         left_last_fparam = 0;
         right_last_fparam = 0;
@@ -53,9 +55,13 @@ public:
     }
     void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
     {
-        double err = min_distance - 5;
-        throttleControll.UpdateErrorTerms( err );
-        throttle_input = throttleControll.OutputToActuator( 1. );
+        double speed_err = ego_velocity_ - 50;
+        speedControll.UpdateErrorTerms( speed_err );
+        throttle_input = speedControll.OutputToActuator( 1. );
+#ifdef DEBUG_ACC
+        cout << "throttle input is " << throttle_input << endl;
+        // throttle_input = 1.;
+#endif
         if( throttle_input > 1 )
             throttle_input = 1;
         if( throttle_input < 0 )
@@ -161,7 +167,8 @@ protected:
     double throttle_input;
     double min_distance;
     vector<double> all_distance;
-    PidController throttleControll;
+    PidController speedControll;
+    PidController distanceControll;
     bool brake;
 
     int last_left_max, last_right_min;  // used for plot a more stable lane
@@ -472,6 +479,7 @@ protected:
 
     bool processObject( tronis::BoxDataSub* sensorData )
     {
+        cout << sensorData->Objects.size() << endl;
         // process data from ObjectListsSensor
         for( size_t i = 0; i < sensorData->Objects.size(); i++ )
         {
@@ -484,10 +492,11 @@ protected:
             float pos_y = location.Y / 100;
             double dist = sqrt( pow( pos_x, 2 ) + pow( pos_y, 2 ) );
             float angle = atan( pos_y / pos_x );
-            //if( actorName.find( "Hatchback" ) == string::npos )
-            //    break;
+            // cout << actorName << endl;
+            if( actorName.find( "Hatchback" ) == string::npos )
+                continue;
 
-            if( object.Type == 1)
+            if( object.Type )
             {
 #ifdef DEBUG_ACC
                 cout << actorName << " at ";
@@ -564,7 +573,7 @@ public:
                     break;
                 }
                 default:
-                {	
+                {
                     std::cout << data_model->ToString() << std::endl;
                     break;
                 }
