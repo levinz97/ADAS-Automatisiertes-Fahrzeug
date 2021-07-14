@@ -12,10 +12,12 @@
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
-//#define DEBUG_MODE
+#define DEBUG_MODE
 //#define DEBUG_STEERING
 #define DEBUG_ACC
 //#define DRAW_POLYGON
+#define PRINT_VALUE_ACC 1
+#define PRINT_VALUE_STEERING 0
 
 using namespace std;
 using namespace cv;
@@ -30,19 +32,20 @@ public:
     -0.006, -0.00005, -0.001 low speed*/
     LaneAssistant()
         : steeringControll( -0.003, -0.000005, -0.005 ),
-          speedControll( -0.02, -0.00005, -0.005 ),
-          distanceControll( -0.003, -0.00005, -0.005 )
+          speedControll( -0.03, -5e-6, -0.5 ),
+          distanceControll( -0.06, -5e-7, -0.5 )
     {
         left_last_fparam = 0;
         right_last_fparam = 0;
         width = height = 0;
         last_left_max = last_right_min = 0;
         center_of_lane = 360;
-        is_leftlane_detected = is_rightlane_detected = true;
+        is_leftline_detected = is_rightline_detected = true;
         curr_time = 0.;
         throttle_input = 0.;
         min_distance = numeric_limits<double>::max();
         brake = false;
+        Objects_in_camera = {};
     }
 
     // do stuff with data
@@ -55,20 +58,48 @@ public:
     }
     void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
     {
+        double set_min_dist = 10;   // in meter
+        double set_max_speed = 50;  // in km/h
+                                    // TODO: set_max_speed should = min(
+                                    // velocity_of_the_frontal_car, 50) if min_distance < threshold.
+
         cout << "min_distance is " << min_distance << endl;
-        // if distance to the front car is more than 20m, only control the speed
-        if( min_distance > 20 || ego_velocity_ > 30 )
+        cout << "ego_velocity is " << ego_velocity_ << endl;
+
+        if( min_distance < set_min_dist && ego_velocity_ > 5 ||
+            min_distance < set_min_dist + 5 && ego_velocity_ > 40 ||
+            min_distance < set_min_dist + 10 && ego_velocity_ > 45 )
         {
+            // to close to the front car, need brake assist
+            string prefix = "brake,";
+            double brake_intensity = 1.;
+            socket.send( tronis::SocketData( prefix + to_string( brake_intensity ) ) );
+            cout << "time to brake!" << endl;
+            // if car stops, clear the i_error in pidController.
+            distanceControll.setZero();
+            return;
+        }
+        else if( min_distance > 1e2 )
+        {
+            // if distance to the front car is more than 20m, only control the speed
             cout << "clear to go " << endl;
-            double speed_err = ego_velocity_ - 30;  // error in km/h
+            double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
             speedControll.UpdateErrorTerms( speed_err );
-            throttle_input = speedControll.OutputToActuator( 0.5 );
+            throttle_input = speedControll.OutputToActuator( 0.5, PRINT_VALUE_ACC );
         }
         else
         {
-            double dist_err = 15 - min_distance;
+            double dist_err = set_min_dist - min_distance;
             distanceControll.UpdateErrorTerms( dist_err );
-            throttle_input = distanceControll.OutputToActuator( 0.6 );
+            throttle_input = distanceControll.OutputToActuator( 0.6, PRINT_VALUE_ACC );
+            if( ego_velocity_ > set_max_speed )
+            {
+                double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
+                speedControll.UpdateErrorTerms( speed_err );
+                double temp_throttle = speedControll.OutputToActuator( 0.5, PRINT_VALUE_ACC );
+
+                throttle_input = min( temp_throttle, throttle_input );
+            }
         }
 
 #ifdef DEBUG_ACC
@@ -90,7 +121,7 @@ public:
         if( abs( width / 2. - center_of_lane ) > 1e-2 )
             err = width / 2. - center_of_lane;
         steeringControll.UpdateErrorTerms( err );
-        double steering = steeringControll.OutputToActuator( 0.5 );
+        double steering = steeringControll.OutputToActuator( 0.5, PRINT_VALUE_STEERING );
         // cout << "the steering before " << steering << endl;
         // steering /= 100;
         if( steering > 1 )
@@ -113,12 +144,12 @@ public:
         //    }
         //}
         // last_direction_sign = steering > 0;
-        if( !is_leftlane_detected && is_rightlane_detected )
+        if( !is_leftline_detected && is_rightline_detected )
         {
             steering = -0.3;
             steeringControll.setZero();
         }
-        if( !is_rightlane_detected && is_leftlane_detected )
+        if( !is_rightline_detected && is_leftline_detected )
         {
             steering = 0.3;
             steeringControll.setZero();
@@ -170,7 +201,7 @@ protected:
     double center_of_lane;
     double steering;
     PidController steeringControll;
-    bool is_leftlane_detected, is_rightlane_detected;
+    bool is_leftline_detected, is_rightline_detected;
     double curr_time;
 
     // adaptive cruise controll
@@ -179,10 +210,11 @@ protected:
     double ego_velocity_;
     double throttle_input;
     double min_distance;
-    vector<double> all_distance;
+    // vector<double> all_distance;
     PidController speedControll;
     PidController distanceControll;
     bool brake;
+    vector<Rect> Objects_in_camera;
 
     int last_left_max, last_right_min;  // used for plot a more stable lane
 
@@ -279,6 +311,22 @@ protected:
                 continue;
             left_min = min( left_min, pt1.x );
             right_max = max( right_max, pt2.x );
+            // remove the influence of other Objects for lane detection
+            if( !Objects_in_camera.empty() )
+            {
+                bool point_not_reliable = false;
+                for( const Rect& rect : Objects_in_camera )
+                {
+                    if( pt1.inside( rect ) || pt2.inside( rect ) )
+                    {
+                        point_not_reliable = true;
+                        break;
+                    }
+                }
+                if( point_not_reliable )
+                    continue;
+            }
+
             if( pt1.inside( Rect( 0, height * 1.2, width * 0.45, height * 0.8 ) ) )
             {
                 // cout << "left point detected = " << pt1 << endl;
@@ -311,8 +359,8 @@ protected:
 #endif
         CurveFitting* fit_L_ptr = generate_oneLine( left_lines, "left" );
         CurveFitting* fit_R_ptr = generate_oneLine( right_lines, "right" );
-        is_leftlane_detected = ( fit_L_ptr != nullptr );
-        is_rightlane_detected = ( fit_R_ptr != nullptr );
+        is_leftline_detected = ( fit_L_ptr != nullptr );
+        is_rightline_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
         draw_polygon( fit_L_ptr, fit_R_ptr );
@@ -322,10 +370,9 @@ protected:
         // cout << "left_point " << left_point << "right_point " << right_point << endl;
         if( isfinite( left_point ) && isfinite( right_point ) )
             center_of_lane = ( left_point + right_point ) / 2.;
-        if( center_of_lane < 0 )
-            center_of_lane = 0;
-        if( center_of_lane > width )
-            center_of_lane = width;
+        // if the estimated center_of_lane not reliable just go straight
+        if( center_of_lane <= 0 || center_of_lane >= width )
+            center_of_lane = width / 2.;
         line( image_, Point2f( center_of_lane, 1.7 * height ), Point2f( width / 2, 2 * height ),
               Scalar( 104, 55, 255 ), 3 );
 
@@ -513,7 +560,7 @@ protected:
             if( object.Type )
             {
 #ifdef DEBUG_ACC
-                cout << actorName << " at ";
+                cout << actorName << " at \n";
                 cout << object.Pose.Location.ToString() << endl;
                 cout << "angle is " << angle << endl;
 #endif
@@ -523,6 +570,10 @@ protected:
                 {
                     min_distance = min( dist, min_distance );
                 }
+
+                // object in homogeneous plane
+                if( !Objects_in_camera.empty() )
+                    Objects_in_camera.pop_back();
             }
             else
             {
