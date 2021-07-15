@@ -32,7 +32,7 @@ public:
     -0.006, -0.00005, -0.001 low speed*/
     LaneAssistant()
         : steeringControll( -0.003, -0.000005, -0.005 ),
-          speedControll( -0.03, -5e-6, -0.5 ),
+          speedControll( -0.3, -5e-6, -0.5 ),
           distanceControll( -0.06, -5e-7, -0.5 )
     {
         left_last_fparam = 0;
@@ -108,8 +108,8 @@ public:
 #endif
         if( throttle_input > 1 )
             throttle_input = 1;
-        if( throttle_input < 0 )
-            throttle_input = 0;
+        if( throttle_input < -1 )
+            throttle_input = -1;
         string prefix = "throttle,";
         socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
     }
@@ -146,6 +146,7 @@ public:
         // last_direction_sign = steering > 0;
         if( !is_leftline_detected && is_rightline_detected )
         {
+			// TODO: steering based on curvature when only one line detected
             steering = -0.3;
             steeringControll.setZero();
         }
