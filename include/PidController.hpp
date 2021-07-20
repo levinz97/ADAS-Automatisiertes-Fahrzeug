@@ -3,27 +3,32 @@
 class PidController
 {
 public:
-    PidController( double Kp_, double Ki_, double Kd_ )
-        : Kp( Kp_ ), Ki( Ki_ ), Kd( Kd_ )
+    PidController( double Kp_, double Ki_, double Kd_ ) : Kp( Kp_ ), Ki( Ki_ ), Kd( Kd_ )
     {
         p_error = 0.;
         i_error = 0.;
         d_error = 0.;
-    };
+    }
 
     /**
      * Update each term in the PID error variables given the current error
      * @param error The current error
      */
-    void UpdateErrorTerms( double error );
+    inline void UpdateErrorTerms( double error )
+    {
+        d_error = error - p_error;
+        i_error += error;
+        p_error = error;
+    }
 
     /**
      * Calculate the each term of the PID error
+     * @param printValue print the error and result in pid controller
      * @output the total command to the actuator
      */
-    double OutputToActuator( double d_limit );
+    double OutputToActuator( double d_limit, bool printValue );
 
-	void setZero();
+    void setZero();
 
 private:
     /**
@@ -39,6 +44,4 @@ private:
     double Kp;
     double Ki;
     double Kd;
-
 };
-
