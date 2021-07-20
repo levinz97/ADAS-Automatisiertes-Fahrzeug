@@ -1,10 +1,12 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <memory>
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 
+#include <opencv2/dnn.hpp>
 #include <communication/multi_socket.h>
 #include <models/tronis/ImageFrame.h>
 #include <grabber/opencv_tools.hpp>
@@ -146,7 +148,7 @@ public:
         // last_direction_sign = steering > 0;
         if( !is_leftline_detected && is_rightline_detected )
         {
-			// TODO: steering based on curvature when only one line detected
+            // TODO: steering based on curvature when only one line detected
             steering = -0.3;
             steeringControll.setZero();
         }
@@ -275,8 +277,8 @@ protected:
         fillPoly( test_roi, ppt_h, npt_h, 1, Scalar( 0 ) );
         // showImage( "region of interest", region_of_interest );
         showImage( "region of interest", test_roi );
-        // Mat original = image_.clone();
-        // imshow( "original input", original );
+        Mat original = image_.clone();
+        imshow( "original input", original );
         // waitKey();
 #endif
 
@@ -358,27 +360,25 @@ protected:
         // waitKey( 10 );
         showImage( "result of Hough transform", res_Hough );
 #endif
-        CurveFitting* fit_L_ptr = generate_oneLine( left_lines, "left" );
-        CurveFitting* fit_R_ptr = generate_oneLine( right_lines, "right" );
+        shared_ptr<CurveFitting> fit_L_ptr = generate_oneLine( left_lines, "left" );
+        shared_ptr<CurveFitting> fit_R_ptr = generate_oneLine( right_lines, "right" );
         is_leftline_detected = ( fit_L_ptr != nullptr );
         is_rightline_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
         draw_polygon( fit_L_ptr, fit_R_ptr );
 #endif
-        double left_point = findLinePoint( fit_L_ptr, "left" );
-        double right_point = findLinePoint( fit_R_ptr, "right" );
+        double left_point = findLinePoint( fit_L_ptr.get(), "left" );
+        double right_point = findLinePoint( fit_R_ptr.get(), "right" );
         // cout << "left_point " << left_point << "right_point " << right_point << endl;
         if( isfinite( left_point ) && isfinite( right_point ) )
             center_of_lane = ( left_point + right_point ) / 2.;
         // if the estimated center_of_lane not reliable just go straight
         if( center_of_lane <= 0 || center_of_lane >= width )
             center_of_lane = width / 2.;
+		// viusalisation: draw a stick pointing the current direction
         line( image_, Point2f( center_of_lane, 1.7 * height ), Point2f( width / 2, 2 * height ),
               Scalar( 104, 55, 255 ), 3 );
-
-        delete fit_L_ptr;
-        delete fit_R_ptr;
     }
     /* find the intersect point between lane and bottom line, used to compute the center of lane.
      * i.e., find x for y = ax^2 + bx + c where y == height of total image_*/
@@ -409,7 +409,10 @@ protected:
         // cout << "lane point = " << lane_point << endl;
         return lane_point;
     }
-    CurveFitting* generate_oneLine( vector<Point2f>& lines, string typeOfLines )
+	/* generate the second order parabola from points
+	 * param: the detected points from probabilistic Hough transform
+	 * return: the CurveFitting params representing the parabola*/
+    shared_ptr<CurveFitting> generate_oneLine( vector<Point2f>& lines, string typeOfLines )
     {
         if( lines.empty() )
         {
@@ -426,26 +429,27 @@ protected:
         // imshow( typeOfLines + " points", image_ );
         // waitKey();
 #endif
-        CurveFitting* fit_ptr;
+        shared_ptr<CurveFitting> fit_ptr;
         if( typeOfLines == "left" )
         {
-            fit_ptr = new CurveFitting( lines, left_last_fparam );
+            fit_ptr = make_shared<CurveFitting>( lines, left_last_fparam );
             fit_ptr->solve( 30 );
             left_last_fparam = fit_ptr->param;
             // cout << "last left fitting parameter is " << left_last_fparam << endl;
-            draw_polynomial( fit_ptr, typeOfLines );
+            draw_polynomial( fit_ptr.get(), typeOfLines );
         }
         else
         {
-            fit_ptr = new CurveFitting( lines, right_last_fparam );
+            fit_ptr = make_shared<CurveFitting>( lines, right_last_fparam );
             fit_ptr->solve( 30 );
             right_last_fparam = fit_ptr->param;
             // cout << "last right fitting parameter is " << right_last_fparam << endl;
-            draw_polynomial( fit_ptr, typeOfLines );
+            draw_polynomial( fit_ptr.get(), typeOfLines );
         }
         return fit_ptr;
     }
 
+	// draw the detected parabola(left and right lines) on image_
     void draw_polynomial( const CurveFitting* fit, string typeOfLines )
     {
         if( !fit )
@@ -530,7 +534,7 @@ protected:
     {
         ego_location_ = msg->Location;
         ego_orientation_ = msg->Orientation;
-        ego_velocity_ = msg->Velocity * 3.6 * 1e-2;  // in Km/h
+        ego_velocity_ = msg->Velocity * 3.6 * 1e-2;  // from cm/s to Km/h
 #ifdef DEBUG_ACC
         // cout << "ego_location is " << ego_location_.ToString() << " \n ego_orientation is "
         //     << ego_orientation_.ToString() << "\n ego_velocity is " << ego_velocity_ << endl;
@@ -574,7 +578,7 @@ protected:
 
                 // object in homogeneous plane
                 if( !Objects_in_camera.empty() )
-                    Objects_in_camera.pop_back();
+                    Objects_in_camera.clear();
             }
             else
             {
