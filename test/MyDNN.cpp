@@ -2,11 +2,12 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <chrono>
+#include "classNames.hpp"
 
 using namespace cv;
 using namespace std;
 
-int smain()
+int main()
 {
     string classNames = "./Mydnn/coco.names";
     string weightPath = "./Mydnn/v3/frozen_inference_graph.pb";
@@ -36,25 +37,28 @@ int smain()
     for( int i = 0; i < detectionMat.rows; i++ )
     {
         float confidence = detectionMat.at<float>( i, 2 );
-        cout << confidence << endl;
+        //cout << confidence << endl;
         if( confidence > confidenceThreshold )
         {
             size_t objectClass = ( size_t )( detectionMat.at<float>( i, 1 ) );
+            cout <<"objectClass is " << objectClass << endl;
 
             int xLeftBottom = static_cast<int>( detectionMat.at<float>( i, 3 ) * img.cols );
             int yLeftBottom = static_cast<int>( detectionMat.at<float>( i, 4 ) * img.rows );
             int xRightTop = static_cast<int>( detectionMat.at<float>( i, 5 ) * img.cols );
             int yRightTop = static_cast<int>( detectionMat.at<float>( i, 6 ) * img.rows );
 
-            ostringstream ss;
-            ss << confidence;
-            String conf( ss.str() );
+            //ostringstream ss;
+            //ss << confidence;
+            //String conf( ss.str() 
+            string conf = to_string( confidence );
 
             Rect object( (int)xLeftBottom, (int)yLeftBottom, (int)( xRightTop - xLeftBottom ),
                          (int)( yRightTop - yLeftBottom ) );
 
             rectangle( img, object, Scalar( 0, 255, 0 ), 2 );
-            String label = /*String(classNames[objectClass]) +*/ char(objectClass) + ": " + conf;
+            String label = myClassNames::classNames[objectClass-1] + ": " + conf;
+			
             int baseLine = 0;
             Size labelSize = getTextSize( label, FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine );
             rectangle( img,
