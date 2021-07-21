@@ -14,11 +14,11 @@
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
-#define DEBUG_MODE
+//#define DEBUG_MODE
 //#define DEBUG_STEERING
-#define DEBUG_ACC
+//#define DEBUG_ACC
 //#define DRAW_POLYGON
-#define PRINT_VALUE_ACC 1
+#define PRINT_VALUE_ACC 0
 #define PRINT_VALUE_STEERING 0
 
 using namespace std;
@@ -48,14 +48,17 @@ public:
         min_distance = numeric_limits<double>::max();
         brake = false;
         Objects_in_camera = {};
+        send_steering_value = send_throttle_value = true;
     }
 
     // do stuff with data
     // send results via socket
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
-        set_steering_input( socket );
-        set_throttle_input( socket );
+        if( send_steering_value )
+            set_steering_input( socket );
+        if( send_throttle_value )
+            set_throttle_input( socket );
         return true;
     }
     void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
@@ -201,6 +204,7 @@ protected:
     Vec3f left_last_fparam, right_last_fparam;
 
     // lane keeping
+    bool send_steering_value;
     double center_of_lane;
     double steering;
     PidController steeringControll;
@@ -208,6 +212,7 @@ protected:
     double curr_time;
 
     // adaptive cruise controll
+    bool send_throttle_value;
     tronis::LocationSub ego_location_;
     tronis::OrientationSub ego_orientation_;
     double ego_velocity_;
@@ -376,7 +381,7 @@ protected:
         // if the estimated center_of_lane not reliable just go straight
         if( center_of_lane <= 0 || center_of_lane >= width )
             center_of_lane = width / 2.;
-		// viusalisation: draw a stick pointing the current direction
+        // viusalisation: draw a stick pointing the current direction
         line( image_, Point2f( center_of_lane, 1.7 * height ), Point2f( width / 2, 2 * height ),
               Scalar( 104, 55, 255 ), 3 );
     }
@@ -409,9 +414,9 @@ protected:
         // cout << "lane point = " << lane_point << endl;
         return lane_point;
     }
-	/* generate the second order parabola from points
-	 * param: the detected points from probabilistic Hough transform
-	 * return: the CurveFitting params representing the parabola*/
+    /* generate the second order parabola from points
+     * param: the detected points from probabilistic Hough transform
+     * return: the CurveFitting params representing the parabola*/
     shared_ptr<CurveFitting> generate_oneLine( vector<Point2f>& lines, string typeOfLines )
     {
         if( lines.empty() )
@@ -449,7 +454,7 @@ protected:
         return fit_ptr;
     }
 
-	// draw the detected parabola(left and right lines) on image_
+    // draw the detected parabola(left and right lines) on image_
     void draw_polynomial( const CurveFitting* fit, string typeOfLines )
     {
         if( !fit )
@@ -606,6 +611,8 @@ public:
             {
                 case tronis::TronisDataType::Image:
                 {
+                    send_steering_value = true;
+                    send_throttle_value = false;
                     processImage( data_model->GetName(),
                                   data_model.get_typed<tronis::ImageSub>()->Image );
                     break;
@@ -625,6 +632,8 @@ public:
                 }
                 case tronis::TronisDataType::ImageFramePose:
                 {
+					send_steering_value = true;
+                    send_throttle_value = false;
                     const tronis::ImageFrame& frames(
                         data_model.get_typed<tronis::ImageFramePoseSub>()->Images );
                     for( size_t i = 0; i != frames.numImages(); ++i )
@@ -644,6 +653,8 @@ public:
                 case tronis::TronisDataType::BoxData:
                 {
                     // cout << "Object detected !" << endl;
+                    send_throttle_value = true;
+                    send_steering_value = false;
                     processObject( data_model.get_typed<tronis::BoxDataSub>() );
                     break;
                 }
@@ -699,7 +710,7 @@ protected:
 };
 
 // main loop opens socket and listens for incoming data
-int main( int argc, char** argv )
+int smain( int argc, char** argv )
 {
     std::cout << "Welcome to lane assistant" << std::endl;
 
