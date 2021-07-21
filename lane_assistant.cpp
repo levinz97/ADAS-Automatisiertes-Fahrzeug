@@ -5,7 +5,7 @@
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
-
+#include <opencv2/core/utility.hpp>
 #include <opencv2/dnn.hpp>
 #include <communication/multi_socket.h>
 #include <models/tronis/ImageFrame.h>
@@ -14,6 +14,7 @@
 
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
+#include "ObjectDetection.hpp"
 //#define DEBUG_MODE
 //#define DEBUG_STEERING
 //#define DEBUG_ACC
@@ -23,6 +24,10 @@
 
 using namespace std;
 using namespace cv;
+
+// file location of neural network
+string weightPath = "./Mydnn/v3/frozen_inference_graph.pb";
+string configPath = "./Mydnn/v3/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt";
 
 class LaneAssistant
 {
@@ -35,7 +40,8 @@ public:
     LaneAssistant()
         : steeringControll( -0.003, -0.000005, -0.005 ),
           speedControll( -0.3, -5e-6, -0.5 ),
-          distanceControll( -0.06, -5e-7, -0.5 )
+          distanceControll( -0.06, -5e-7, -0.5 ),
+          object_detector( weightPath, configPath )
     {
         left_last_fparam = 0;
         right_last_fparam = 0;
@@ -47,8 +53,10 @@ public:
         throttle_input = 0.;
         min_distance = numeric_limits<double>::max();
         brake = false;
-        Objects_in_camera = {};
+        objects_in_camera = {};
         send_steering_value = send_throttle_value = true;
+        ego_velocity_ = 0;
+        // is_object_insight = false;
     }
 
     // do stuff with data
@@ -86,7 +94,7 @@ public:
         }
         else if( min_distance > 1e2 )
         {
-            // if distance to the front car is more than 20m, only control the speed
+            // if distance to the front car is more than 100m, only control the speed
             cout << "clear to go " << endl;
             double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
             speedControll.UpdateErrorTerms( speed_err );
@@ -199,14 +207,13 @@ public:
 protected:
     // lane detection
     std::string image_name_;
-    cv::Mat image_, grey_image;
+    cv::Mat image_;
     int width, height;  // size of under half of image
     Vec3f left_last_fparam, right_last_fparam;
 
     // lane keeping
     bool send_steering_value;
     double center_of_lane;
-    double steering;
     PidController steeringControll;
     bool is_leftline_detected, is_rightline_detected;
     double curr_time;
@@ -222,7 +229,11 @@ protected:
     PidController speedControll;
     PidController distanceControll;
     bool brake;
-    vector<Rect> Objects_in_camera;
+
+    // object detection from camera image
+    vector<Rect> objects_in_camera;
+    ObjectDetection object_detector;
+    // bool is_object_insight;
 
     int last_left_max, last_right_min;  // used for plot a more stable lane
 
@@ -230,6 +241,7 @@ protected:
     // Insert your algorithm here
     void detectLanes()
     {
+        Mat grey_image;
         cvtColor( image_, grey_image, COLOR_BGR2GRAY );
         width = grey_image.cols, height = grey_image.rows / 2;
 
@@ -260,9 +272,11 @@ protected:
         fillConvexPoly( region_of_interest, ppt, num, Scalar( 255 ) );
         // bitwise_and() preserve all the value from canny_output in triangle region_of_interest
         bitwise_and( canny_output, region_of_interest, region_of_interest );
+        canny_output.release();
 
         // remove the line on the hood
         Mat region_on_hood = Mat::zeros( height, width, grey_image.type() );
+        grey_image.release();
         const int num_h = 4;
         Point points_h[1][num_h] = {Point( width * 0.1, height ), Point( width * 0.9, height ),
                                     Point( width * 0.75, height * 0.7 ),
@@ -286,10 +300,10 @@ protected:
         imshow( "original input", original );
         // waitKey();
 #endif
-
         Mat res_Hough;
         image_.copyTo( res_Hough );
 
+        object_detector.drawBoundingBox( image_, objects_in_camera );
         vector<Vec4i> lines;
         vector<Point2f> left_lines, right_lines;
         ////---------------------------------------------------------------------------extremly_important_parameters----------------//
@@ -312,7 +326,9 @@ protected:
                 pt1 = Point2f( l[2], l[3] += height );
                 pt2 = Point2f( l[0], l[1] += height );
             }
+#ifdef DEBUG_MODE
             line( res_Hough, pt1, pt2, Scalar( 0, 0, 255 ), 3, LINE_AA );
+#endif
             double slope = ( 1. * l[3] - l[1] ) / ( l[2] - l[0] );
             ////-------------------------------------------------------------------------------------important_parameters------------------------------------///
             if( abs( slope ) < tan( CV_PI / 180 * 10 ) )
@@ -320,10 +336,10 @@ protected:
             left_min = min( left_min, pt1.x );
             right_max = max( right_max, pt2.x );
             // remove the influence of other Objects for lane detection
-            if( !Objects_in_camera.empty() )
+            if( !objects_in_camera.empty() )
             {
                 bool point_not_reliable = false;
-                for( const Rect& rect : Objects_in_camera )
+                for( const Rect& rect : objects_in_camera )
                 {
                     if( pt1.inside( rect ) || pt2.inside( rect ) )
                     {
@@ -365,13 +381,13 @@ protected:
         // waitKey( 10 );
         showImage( "result of Hough transform", res_Hough );
 #endif
-        shared_ptr<CurveFitting> fit_L_ptr = generate_oneLine( left_lines, "left" );
-        shared_ptr<CurveFitting> fit_R_ptr = generate_oneLine( right_lines, "right" );
+        shared_ptr<CurveFitting> fit_L_ptr = generateOneLine( left_lines, "left" );
+        shared_ptr<CurveFitting> fit_R_ptr = generateOneLine( right_lines, "right" );
         is_leftline_detected = ( fit_L_ptr != nullptr );
         is_rightline_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
-        draw_polygon( fit_L_ptr, fit_R_ptr );
+        drawPolygon( fit_L_ptr.get(), fit_R_ptr.get() );
 #endif
         double left_point = findLinePoint( fit_L_ptr.get(), "left" );
         double right_point = findLinePoint( fit_R_ptr.get(), "right" );
@@ -416,8 +432,9 @@ protected:
     }
     /* generate the second order parabola from points
      * param: the detected points from probabilistic Hough transform
-     * return: the CurveFitting params representing the parabola*/
-    shared_ptr<CurveFitting> generate_oneLine( vector<Point2f>& lines, string typeOfLines )
+     * return: the shared_ptr of CurveFitting class representing the parabola
+     */
+    shared_ptr<CurveFitting> generateOneLine( vector<Point2f>& lines, string typeOfLines )
     {
         if( lines.empty() )
         {
@@ -438,24 +455,24 @@ protected:
         if( typeOfLines == "left" )
         {
             fit_ptr = make_shared<CurveFitting>( lines, left_last_fparam );
-            fit_ptr->solve( 30 );
+            fit_ptr->solve( 10 );
             left_last_fparam = fit_ptr->param;
             // cout << "last left fitting parameter is " << left_last_fparam << endl;
-            draw_polynomial( fit_ptr.get(), typeOfLines );
+            drawPolynomial( fit_ptr.get(), typeOfLines );
         }
         else
         {
             fit_ptr = make_shared<CurveFitting>( lines, right_last_fparam );
-            fit_ptr->solve( 30 );
+            fit_ptr->solve( 10 );
             right_last_fparam = fit_ptr->param;
             // cout << "last right fitting parameter is " << right_last_fparam << endl;
-            draw_polynomial( fit_ptr.get(), typeOfLines );
+            drawPolynomial( fit_ptr.get(), typeOfLines );
         }
         return fit_ptr;
     }
 
     // draw the detected parabola(left and right lines) on image_
-    void draw_polynomial( const CurveFitting* fit, string typeOfLines )
+    void drawPolynomial( const CurveFitting* fit, string typeOfLines )
     {
         if( !fit )
             return;
@@ -508,7 +525,7 @@ protected:
     }
 
     // draw the areas that have been enclosed by 2 lanes, only used for visualisation.
-    void draw_polygon( const CurveFitting* fitL, const CurveFitting* fitR )
+    void drawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
     {
         if( !fitL || !fitR )
         {
@@ -580,10 +597,6 @@ protected:
                 {
                     min_distance = min( dist, min_distance );
                 }
-
-                // object in homogeneous plane
-                if( !Objects_in_camera.empty() )
-                    Objects_in_camera.clear();
             }
             else
             {
@@ -591,6 +604,33 @@ protected:
                     brake = true;
             }
         }
+        cout << "number of objects is " << num_of_objects << endl;
+        if( num_of_objects == 0 )
+            return false;
+        // only the under part of picture will be used for object detection
+        int translation = static_cast<int>( 1.1 * height );
+        if( num_of_objects >= 2 )
+            translation = static_cast<int>( 0.9 * height );
+        Mat detection_mat =
+            image_( Rect( 0, translation, width, height * 1.75 - translation ) ).clone();
+        // detect object from image
+        // since the camera works at 60Hz, to reduce the computational effort, detect object every
+        // 30 frames
+        static size_t cnt = 0;
+        // cout << "cnt is " << cnt << endl;
+        if( cnt == 15 )
+        {
+            bool object_detected =
+                object_detector.detectObject( detection_mat, objects_in_camera, translation );
+            if( !object_detected )
+                cout << "no object detected in image" << endl;
+            cnt = 0;
+        }
+        else
+        {
+            ++cnt;
+        }
+        // object_detector.drawBoundingBox( image_, objects_in_camera );
         return true;
     }
 
@@ -632,7 +672,7 @@ public:
                 }
                 case tronis::TronisDataType::ImageFramePose:
                 {
-					send_steering_value = true;
+                    send_steering_value = true;
                     send_throttle_value = false;
                     const tronis::ImageFrame& frames(
                         data_model.get_typed<tronis::ImageFramePoseSub>()->Images );
@@ -655,6 +695,7 @@ public:
                     // cout << "Object detected !" << endl;
                     send_throttle_value = true;
                     send_steering_value = false;
+                    /*is_object_insight =*/
                     processObject( data_model.get_typed<tronis::BoxDataSub>() );
                     break;
                 }
@@ -700,7 +741,17 @@ protected:
 
         image_name_ = base_name;
         image_ = tronis::image2Mat( image );
-
+        //// reduce the frequency of camera from 60Hz to 30 Hz to reduce computational effort
+        //      static size_t cnt = 0;
+        //      if( cnt > 1 )
+        //      {
+        //          cnt = 0;
+        //          return false;
+        //      }
+        //      else
+        //      {
+        //          ++cnt;
+        //      }
         detectLanes();
 #ifndef DEBUG_MOD
         showImage( image_name_, image_ );
@@ -710,8 +761,9 @@ protected:
 };
 
 // main loop opens socket and listens for incoming data
-int smain( int argc, char** argv )
+int main( int argc, char** argv )
 {
+    setNumThreads( 5 );
     std::cout << "Welcome to lane assistant" << std::endl;
 
     // specify socket parameters
