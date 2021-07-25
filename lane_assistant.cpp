@@ -15,7 +15,7 @@
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
 #include "ObjectDetection.hpp"
-//#define DEBUG_MODE
+#define DEBUG_MODE
 //#define DEBUG_STEERING
 #define DEBUG_ACC
 //#define DRAW_POLYGON // used for visualization
@@ -45,8 +45,8 @@ using cv::Vec3f;
 using cv::Vec4i;
 
 // file location of neural network
-string weightPath = "./Mydnn/v3/frozen_inference_graph.pb";
-string configPath = "./Mydnn/v3/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt";
+string weightPath = "Mydnn/v3/frozen_inference_graph.pb";
+string configPath = "Mydnn/v3/ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt";
 
 class LaneAssistant
 {
@@ -117,9 +117,9 @@ public:
             distanceController.setZero();
             return;
         }
-        else if( min_distance > 1e2 )
+        else if( min_distance > 50 )
         {
-            // if distance to the front car is more than 100m, only control the speed
+            // if distance to the front car is more than 50m, only control the speed
             cout << "clear to go " << endl;
             double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
             speedController.UpdateErrorTerms( speed_err );
@@ -451,8 +451,11 @@ protected:
     }
     /* find the intersect point between lane and bottom line, used to compute the center of lane.
      * i.e., find x for y = ax^2 + bx + c where y == height of total image_
+	 * @param: pointer to the CurveFitting class
+	 * @param: the type of line: "right" or "left"
+	 * @return: the x value (width) in picture, where right/left line intersect with the y == height
      */
-    double findLinePoint( const CurveFitting* fit_ptr, string TypeOfLane )
+    double findLinePoint( const CurveFitting* fit_ptr, string Type_of_lines )
     {
         if( !fit_ptr )
             return numeric_limits<double>::infinity();
@@ -473,41 +476,42 @@ protected:
                 lane_point = temp_x_1 / ( 2 * a );
             else
                 lane_point = temp_x_2 / ( 2 * a );
-            if( TypeOfLane == "right" && lane_point < 0 )
+            if( Type_of_lines == "right" && lane_point < 0 )
                 lane_point = temp_x_2 / ( 2 * a );
         }
         // cout << "lane point = " << lane_point << endl;
         return lane_point;
     }
     /* generate the second order parabola from points
-     * param: the detected points from probabilistic Hough transform
-     * return: the shared_ptr of CurveFitting class representing the parabola
+     * @param: the detected points from probabilistic Hough 
+	 * @param: the type of line: "right" or "left"
+     * @return: the shared_ptr of CurveFitting class representing the parabola
      */
-    shared_ptr<CurveFitting> generateOneLine( vector<Point2f>& lines, string typeOfLines )
+    shared_ptr<CurveFitting> generateOneLine( vector<Point2f>& lines, string type_of_lines )
     {
         if( lines.empty() )
         {
-            cout << "no " << typeOfLines << " line detected!" << endl;
+            cout << "no " << type_of_lines << " line detected!" << endl;
             return nullptr;
         }
 #ifdef DEBUG_MODE
         Scalar color = Scalar( 255, 20, 20 );
-        color = typeOfLines == "right" ? Scalar( 100, 100, 255 ) : Scalar( 255, 100, 0 );
+        color = type_of_lines == "right" ? Scalar( 100, 100, 255 ) : Scalar( 255, 100, 0 );
         for( auto point : lines )
         {
             circle( image_, point, 10, color, 2 );
         }
-        // imshow( typeOfLines + " points", image_ );
+        // imshow( type_of_lines + " points", image_ );
         // waitKey();
 #endif
         shared_ptr<CurveFitting> fit_ptr;
-        if( typeOfLines == "left" )
+        if( type_of_lines == "left" )
         {
             fit_ptr = make_shared<CurveFitting>( lines, left_last_fparam );
             fit_ptr->solve( 10 );
             left_last_fparam = fit_ptr->param;
             // cout << "last left fitting parameter is " << left_last_fparam << endl;
-            drawPolynomial( fit_ptr.get(), typeOfLines );
+            drawPolynomial( fit_ptr.get(), type_of_lines );
         }
         else
         {
@@ -515,12 +519,15 @@ protected:
             fit_ptr->solve( 10 );
             right_last_fparam = fit_ptr->param;
             // cout << "last right fitting parameter is " << right_last_fparam << endl;
-            drawPolynomial( fit_ptr.get(), typeOfLines );
+            drawPolynomial( fit_ptr.get(), type_of_lines );
         }
         return fit_ptr;
     }
 
-    // draw the detected parabola(left and right lines) on image_
+    /* draw the detected parabola(left and right lines) on image_
+	 * @param: pointer to the CurveFitting class
+	 * @param: type of lines
+	 */
     void drawPolynomial( const CurveFitting* fit, string typeOfLines )
     {
         if( !fit )
@@ -685,9 +692,10 @@ protected:
         // detect object from image
         // since the camera works at 60Hz, to reduce the computational effort, detect object every
         // max_cnt frames
+        size_t max_cnt = 7;
         static size_t cnt = 0;
         // cout << "cnt is " << cnt << endl;
-        if( cnt > 7 )
+        if( cnt > max_cnt )
         {
             bool object_detected =
                 object_detector.detectObject( detection_mat, objects_in_camera, translation );
