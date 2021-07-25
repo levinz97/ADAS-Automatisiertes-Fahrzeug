@@ -2,11 +2,11 @@
 #include <fstream>
 #include <string>
 #include <memory>
+//#include <thread>
 
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/core/utility.hpp>
-#include <opencv2/dnn.hpp>
 #include <communication/multi_socket.h>
 #include <models/tronis/ImageFrame.h>
 #include <grabber/opencv_tools.hpp>
@@ -17,13 +17,32 @@
 #include "ObjectDetection.hpp"
 //#define DEBUG_MODE
 //#define DEBUG_STEERING
-//#define DEBUG_ACC
-//#define DRAW_POLYGON
-#define PRINT_VALUE_ACC 0
+#define DEBUG_ACC
+//#define DRAW_POLYGON // used for visualization
+#define ENABLE_OBJECT_DETECTION 1
+#define PRINT_VALUE_ACC 1
 #define PRINT_VALUE_STEERING 0
 
-using namespace std;
-using namespace cv;
+// using namespace std;
+using std::cout;
+using std::endl;
+using std::make_shared;
+using std::max;
+using std::min;
+using std::numeric_limits;
+using std::shared_ptr;
+using std::string;
+using std::to_string;
+using std::vector;
+// using namespace cv;
+using cv::Mat;
+using cv::Point;
+using cv::Point2f;
+using cv::Rect;
+using cv::Scalar;
+using cv::Size;
+using cv::Vec3f;
+using cv::Vec4i;
 
 // file location of neural network
 string weightPath = "./Mydnn/v3/frozen_inference_graph.pb";
@@ -38,10 +57,12 @@ public:
     -0.003, -0.00005, -0.005 speed > 50 km/h
     -0.006, -0.00005, -0.001 low speed*/
     LaneAssistant()
-        : steeringControll( -0.003, -0.000005, -0.005 ),
-          speedControll( -0.3, -5e-6, -0.5 ),
-          distanceControll( -0.06, -5e-7, -0.5 ),
-          object_detector( weightPath, configPath )
+        : steeringController( -0.003, -0.000005, -0.005 ),
+          speedController( -0.3, -5e-6, -5 ),
+          distanceController( -0.07, -5e-7, -5 )
+#if ENABLE_OBJECT_DETECTION 
+          ,object_detector( weightPath, configPath )
+#endif
     {
         left_last_fparam = 0;
         right_last_fparam = 0;
@@ -49,13 +70,16 @@ public:
         last_left_max = last_right_min = 0;
         center_of_lane = 360;
         is_leftline_detected = is_rightline_detected = true;
-        curr_time = 0.;
+        curr_time = last_time = 0.;
         throttle_input = 0.;
         min_distance = numeric_limits<double>::max();
         brake = false;
+#if ENABLE_OBJECT_DETECTION
         objects_in_camera = {};
+#endif
         send_steering_value = send_throttle_value = true;
         ego_velocity_ = 0;
+        image_ = Mat::zeros( Size( 512, 720 ), CV_32F );
         // is_object_insight = false;
     }
 
@@ -64,12 +88,12 @@ public:
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
         if( send_steering_value )
-            set_steering_input( socket );
+            setSteeringInput( socket );
         if( send_throttle_value )
-            set_throttle_input( socket );
+            setThrottleInput( socket );
         return true;
     }
-    void set_throttle_input( tronis::CircularMultiQueuedSocket& socket )
+    void setThrottleInput( tronis::CircularMultiQueuedSocket& socket )
     {
         double set_min_dist = 10;   // in meter
         double set_max_speed = 50;  // in km/h
@@ -81,7 +105,8 @@ public:
 
         if( min_distance < set_min_dist && ego_velocity_ > 5 ||
             min_distance < set_min_dist + 5 && ego_velocity_ > 40 ||
-            min_distance < set_min_dist + 10 && ego_velocity_ > 45 )
+            min_distance < set_min_dist + 10 && ego_velocity_ > 45 ||
+            brake )
         {
             // to close to the front car, need brake assist
             string prefix = "brake,";
@@ -89,7 +114,7 @@ public:
             socket.send( tronis::SocketData( prefix + to_string( brake_intensity ) ) );
             cout << "time to brake!" << endl;
             // if car stops, clear the i_error in pidController.
-            distanceControll.setZero();
+            distanceController.setZero();
             return;
         }
         else if( min_distance > 1e2 )
@@ -97,19 +122,22 @@ public:
             // if distance to the front car is more than 100m, only control the speed
             cout << "clear to go " << endl;
             double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
-            speedControll.UpdateErrorTerms( speed_err );
-            throttle_input = speedControll.OutputToActuator( 0.5, PRINT_VALUE_ACC );
+            speedController.UpdateErrorTerms( speed_err );
+            throttle_input = speedController.OutputToActuator( 0.5, PRINT_VALUE_ACC );
         }
         else
         {
+			// there is a car ahead, controlled by both min_distance and set_max_speed
             double dist_err = set_min_dist - min_distance;
-            distanceControll.UpdateErrorTerms( dist_err );
-            throttle_input = distanceControll.OutputToActuator( 0.6, PRINT_VALUE_ACC );
+            if( dist_err > 0 )
+                dist_err *= 10;
+            distanceController.UpdateErrorTerms( dist_err );
+            throttle_input = distanceController.OutputToActuator( 0.6, PRINT_VALUE_ACC );
             if( ego_velocity_ > set_max_speed )
             {
                 double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
-                speedControll.UpdateErrorTerms( speed_err );
-                double temp_throttle = speedControll.OutputToActuator( 0.5, PRINT_VALUE_ACC );
+                speedController.UpdateErrorTerms( speed_err );
+                double temp_throttle = speedController.OutputToActuator( 0.5, PRINT_VALUE_ACC );
 
                 throttle_input = min( temp_throttle, throttle_input );
             }
@@ -121,20 +149,23 @@ public:
 #endif
         if( throttle_input > 1 )
             throttle_input = 1;
+        else if( throttle_input < 0 && abs( ego_velocity_ ) < 1 )
+            // if the car is still, prevent it from moving backwards
+            throttle_input = 0;
         if( throttle_input < -1 )
             throttle_input = -1;
         string prefix = "throttle,";
         socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
     }
 
-    void set_steering_input( tronis::CircularMultiQueuedSocket& socket )
+    void setSteeringInput( tronis::CircularMultiQueuedSocket& socket )
     {
         // cout << "width_of_image = " << width << endl;
         double err = 0.;
         if( abs( width / 2. - center_of_lane ) > 1e-2 )
             err = width / 2. - center_of_lane;
-        steeringControll.UpdateErrorTerms( err );
-        double steering = steeringControll.OutputToActuator( 0.5, PRINT_VALUE_STEERING );
+        steeringController.UpdateErrorTerms( err );
+        double steering = steeringController.OutputToActuator( 0.5, PRINT_VALUE_STEERING );
         // cout << "the steering before " << steering << endl;
         // steering /= 100;
         if( steering > 1 )
@@ -152,7 +183,7 @@ public:
         //    if( zigzag_cnt > 3 )
         //    {
         //        cout << "to rapid steering change detected! " << zigzag_cnt << '\n';
-        //        steeringControll.setZero();
+        //        steeringController.setZero();
         //        zigzag_cnt = 0;
         //    }
         //}
@@ -161,12 +192,12 @@ public:
         {
             // TODO: steering based on curvature when only one line detected
             steering = -0.3;
-            steeringControll.setZero();
+            steeringController.setZero();
         }
         if( !is_rightline_detected && is_leftline_detected )
         {
             steering = 0.3;
-            steeringControll.setZero();
+            steeringController.setZero();
         }
 
         // steering = 0.;
@@ -181,7 +212,7 @@ public:
         //        cout << "understeering detected, increase the steering!" << endl;
         //        steering =
         //            max( steering, ( last_left_max + last_right_min - width ) / ( 1. * width ) );
-        //        // steeringControll.setZero();
+        //        // steeringController.setZero();
         //        prefix = " right turn under steering,";
         //    }
         //    if( last_left_max < 0.3 * width && last_right_min < 0.55*width )
@@ -190,14 +221,14 @@ public:
         //        cout << "understeering detected, increase the steering!" << endl;
         //        steering = min(
         //            steering, ( last_left_max + last_right_min - width ) / ( 1. * width ) );
-        //        // steeringControll.setZero();
+        //        // steeringController.setZero();
         //        prefix = " left turn under steering,";
         //    }
         //}
 
         socket.send( tronis::SocketData( prefix + to_string( steering ) ) );
         // if( int( curr_time ) % 100 == 0 )
-        //    steeringControll.setZero();
+        //    steeringController.setZero();
 #ifdef DEBUG_STEERING
         cout << "center_of_lane = " << center_of_lane << endl;
         cout << "steering is " << steering << endl;
@@ -206,17 +237,17 @@ public:
 
 protected:
     // lane detection
-    std::string image_name_;
-    cv::Mat image_;
+    string image_name_;
+    Mat image_;
     int width, height;  // size of under half of image
     Vec3f left_last_fparam, right_last_fparam;
 
     // lane keeping
     bool send_steering_value;
     double center_of_lane;
-    PidController steeringControll;
+    PidController steeringController;
     bool is_leftline_detected, is_rightline_detected;
-    double curr_time;
+    double curr_time, last_time;
 
     // adaptive cruise controll
     bool send_throttle_value;
@@ -226,23 +257,32 @@ protected:
     double throttle_input;
     double min_distance;
     // vector<double> all_distance;
-    PidController speedControll;
-    PidController distanceControll;
+    PidController speedController;
+    PidController distanceController;
     bool brake;
 
+#if ENABLE_OBJECT_DETECTION
     // object detection from camera image
     vector<Rect> objects_in_camera;
     ObjectDetection object_detector;
     // bool is_object_insight;
-
-    int last_left_max, last_right_min;  // used for plot a more stable lane
+#endif
+    int last_left_max, last_right_min;  // used to plot a more stable lane
 
     // Function to detect lanes based on camera image
-    // Insert your algorithm here
     void detectLanes()
     {
+        //// only the under part of picture will be used for object detection
+        //      int translation = static_cast<int>( 1.1 * height );
+        //      Mat detection_mat =
+        //          image_( Rect( 0, translation, width, height * 1.75 - translation ) ).clone();
+        //      // detect object from image
+        // thread t1( &ObjectDetection::detectObject, &object_detector, ref(detection_mat),
+        // ref(objects_in_camera), translation );
+        ////cout << image_.size << endl;
+
         Mat grey_image;
-        cvtColor( image_, grey_image, COLOR_BGR2GRAY );
+        cvtColor( image_, grey_image, cv::COLOR_BGR2GRAY );
         width = grey_image.cols, height = grey_image.rows / 2;
 
         // bottom half of original picture
@@ -274,7 +314,7 @@ protected:
         bitwise_and( canny_output, region_of_interest, region_of_interest );
         canny_output.release();
 
-        // remove the line on the hood
+        // remove the lines on the hood
         Mat region_on_hood = Mat::zeros( height, width, grey_image.type() );
         grey_image.release();
         const int num_h = 4;
@@ -303,7 +343,9 @@ protected:
         Mat res_Hough;
         image_.copyTo( res_Hough );
 
+#if ENABLE_OBJECT_DETECTION
         object_detector.drawBoundingBox( image_, objects_in_camera );
+#endif
         vector<Vec4i> lines;
         vector<Point2f> left_lines, right_lines;
         ////---------------------------------------------------------------------------extremly_important_parameters----------------//
@@ -327,7 +369,7 @@ protected:
                 pt2 = Point2f( l[0], l[1] += height );
             }
 #ifdef DEBUG_MODE
-            line( res_Hough, pt1, pt2, Scalar( 0, 0, 255 ), 3, LINE_AA );
+            line( res_Hough, pt1, pt2, Scalar( 0, 0, 255 ), 3, cv::LINE_AA );
 #endif
             double slope = ( 1. * l[3] - l[1] ) / ( l[2] - l[0] );
             ////-------------------------------------------------------------------------------------important_parameters------------------------------------///
@@ -335,6 +377,11 @@ protected:
                 continue;
             left_min = min( left_min, pt1.x );
             right_max = max( right_max, pt2.x );
+
+            // t1.join();
+
+#if ENABLE_OBJECT_DETECTION
+            // object_detector.drawBoundingBox( image_, objects_in_camera );
             // remove the influence of other Objects for lane detection
             if( !objects_in_camera.empty() )
             {
@@ -350,6 +397,7 @@ protected:
                 if( point_not_reliable )
                     continue;
             }
+#endif
 
             if( pt1.inside( Rect( 0, height * 1.2, width * 0.45, height * 0.8 ) ) )
             {
@@ -402,7 +450,8 @@ protected:
               Scalar( 104, 55, 255 ), 3 );
     }
     /* find the intersect point between lane and bottom line, used to compute the center of lane.
-     * i.e., find x for y = ax^2 + bx + c where y == height of total image_*/
+     * i.e., find x for y = ax^2 + bx + c where y == height of total image_
+     */
     double findLinePoint( const CurveFitting* fit_ptr, string TypeOfLane )
     {
         if( !fit_ptr )
@@ -524,7 +573,7 @@ protected:
 #endif
     }
 
-    // draw the areas that have been enclosed by 2 lanes, only used for visualisation.
+    // draw the areas that have been enclosed by 2 lines, only used for visualisation.
     void drawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
     {
         if( !fitL || !fitR )
@@ -569,6 +618,7 @@ protected:
         size_t num_of_objects = sensorData->Objects.size();
         // process data from ObjectListsSensor
         min_distance = numeric_limits<double>::max();
+        bool static_object_ahead = false;
         for( size_t i = 0; i < num_of_objects; i++ )
         {
             const tronis::ObjectSub& object = sensorData->Objects[i];
@@ -580,33 +630,52 @@ protected:
             float pos_y = location.Y / 100;
             double dist = sqrt( pow( pos_x, 2 ) + pow( pos_y, 2 ) );
             float angle = atan( pos_y / pos_x );
-            // cout << actorName << endl;
-            if( actorName.find( "Hatchback" ) == string::npos )
-                continue;
+            cout << actorName << endl;
+            // if( actorName.find( "Hatchback" ) == string::npos )
+            //    continue;
+
+#ifdef DEBUG_ACC
+            cout << actorName << " at \n";
+            cout << object.Pose.Location.ToString() << "\n";
+            cout << "angle is " << angle << "\n";
+            cout << "distance is " << dist << endl;
+#endif
 
             if( object.Type )
             {
-#ifdef DEBUG_ACC
-                cout << actorName << " at \n";
-                cout << object.Pose.Location.ToString() << endl;
-                cout << "angle is " << angle << endl;
-#endif
+                // for movable and animated object constrain the minimal distance
                 if( abs( angle ) > CV_PI * 25 / 180. )
                     continue;
-                if( abs( pos_y ) < 10 )
+                if( abs( pos_y ) < 3 )
                 {
                     min_distance = min( dist, min_distance );
                 }
             }
             else
             {
-                if( dist < 2 && abs( angle ) < CV_PI * 10 / 180. )
+                if( static_object_ahead )
+                    continue;
+                // for static object just brake
+                if( dist < max(2 * ego_velocity_ / 3.6, 10.) && abs( pos_y ) < 3 )
+                {
                     brake = true;
+                    static_object_ahead = true;
+                }
+                else
+                    brake = false;
             }
         }
+        if( !static_object_ahead )
+            brake = false;
         cout << "number of objects is " << num_of_objects << endl;
         if( num_of_objects == 0 )
+        {
+#if ENABLE_OBJECT_DETECTION
+            objects_in_camera.clear();
+#endif
             return false;
+        }
+#if ENABLE_OBJECT_DETECTION
         // only the under part of picture will be used for object detection
         int translation = static_cast<int>( 1.1 * height );
         if( num_of_objects >= 2 )
@@ -615,10 +684,10 @@ protected:
             image_( Rect( 0, translation, width, height * 1.75 - translation ) ).clone();
         // detect object from image
         // since the camera works at 60Hz, to reduce the computational effort, detect object every
-        // 30 frames
+        // max_cnt frames
         static size_t cnt = 0;
         // cout << "cnt is " << cnt << endl;
-        if( cnt == 15 )
+        if( cnt > 7 )
         {
             bool object_detected =
                 object_detector.detectObject( detection_mat, objects_in_camera, translation );
@@ -631,6 +700,7 @@ protected:
             ++cnt;
         }
         // object_detector.drawBoundingBox( image_, objects_in_camera );
+#endif
         return true;
     }
 
@@ -641,6 +711,7 @@ public:
     {
         if( data_model->GetModelType() == tronis::ModelType::Tronis )
         {
+            last_time = curr_time;
             curr_time = data_model->GetTime();
 
             std::cout << "Id: " << data_model->GetTypeId() << ", Name: " << data_model->GetName()
@@ -741,17 +812,19 @@ protected:
 
         image_name_ = base_name;
         image_ = tronis::image2Mat( image );
-        //// reduce the frequency of camera from 60Hz to 30 Hz to reduce computational effort
-        //      static size_t cnt = 0;
-        //      if( cnt > 1 )
-        //      {
-        //          cnt = 0;
-        //          return false;
-        //      }
-        //      else
-        //      {
-        //          ++cnt;
-        //      }
+        //// reduce the frequency of camera to reduce computational effort
+        //// every 15 frames
+        //static size_t cnt = 0;
+        //// cout << "cnt is " << cnt << endl;
+        //if( cnt == 15 )
+        //{
+        //    cnt = 0;
+        //    return false;
+        //}
+        //else
+        //{
+        //    ++cnt;
+        //}
         detectLanes();
 #ifndef DEBUG_MOD
         showImage( image_name_, image_ );
@@ -763,7 +836,7 @@ protected:
 // main loop opens socket and listens for incoming data
 int main( int argc, char** argv )
 {
-    setNumThreads( 5 );
+    cv::setNumThreads( 8 );
     std::cout << "Welcome to lane assistant" << std::endl;
 
     // specify socket parameters
@@ -838,8 +911,3 @@ int main( int argc, char** argv )
     }
     return 0;
 }
-//
-// int main()
-//{
-//    test();
-//}
