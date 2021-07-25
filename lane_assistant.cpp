@@ -15,6 +15,7 @@
 #include "CurveFitting.hpp"
 #include "PidController.hpp"
 #include "ObjectDetection.hpp"
+
 #define DEBUG_MODE
 //#define DEBUG_STEERING
 #define DEBUG_ACC
@@ -73,7 +74,7 @@ public:
         curr_time = last_time = 0.;
         throttle_input = 0.;
         min_distance = numeric_limits<double>::max();
-        brake = false;
+        need_brake = false;
 #if ENABLE_OBJECT_DETECTION
         objects_in_camera = {};
 #endif
@@ -88,12 +89,14 @@ public:
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
         if( send_steering_value )
-            setSteeringInput( socket );
+            SetSteeringInput( socket );
         if( send_throttle_value )
-            setThrottleInput( socket );
+            SetThrottleInput( socket );
         return true;
     }
-    void setThrottleInput( tronis::CircularMultiQueuedSocket& socket )
+
+protected:
+    void SetThrottleInput( tronis::CircularMultiQueuedSocket& socket )
     {
         double set_min_dist = 10;   // in meter
         double set_max_speed = 50;  // in km/h
@@ -106,9 +109,9 @@ public:
         if( min_distance < set_min_dist && ego_velocity_ > 5 ||
             min_distance < set_min_dist + 5 && ego_velocity_ > 40 ||
             min_distance < set_min_dist + 10 && ego_velocity_ > 45 ||
-            brake )
+            need_brake )
         {
-            // to close to the front car, need brake assist
+            // to close to the front car, need need_brake assist
             string prefix = "brake,";
             double brake_intensity = 1.;
             socket.send( tronis::SocketData( prefix + to_string( brake_intensity ) ) );
@@ -158,7 +161,7 @@ public:
         socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
     }
 
-    void setSteeringInput( tronis::CircularMultiQueuedSocket& socket )
+    void SetSteeringInput( tronis::CircularMultiQueuedSocket& socket )
     {
         // cout << "width_of_image = " << width << endl;
         double err = 0.;
@@ -199,8 +202,6 @@ public:
             steering = 0.3;
             steeringController.setZero();
         }
-
-        // steering = 0.;
 
         string prefix = "steering,";
         //  prevent under steering at rapid curve, only applied at high speed > 75 km/h
@@ -259,7 +260,7 @@ protected:
     // vector<double> all_distance;
     PidController speedController;
     PidController distanceController;
-    bool brake;
+    bool need_brake;
 
 #if ENABLE_OBJECT_DETECTION
     // object detection from camera image
@@ -398,7 +399,6 @@ protected:
                     continue;
             }
 #endif
-
             if( pt1.inside( Rect( 0, height * 1.2, width * 0.45, height * 0.8 ) ) )
             {
                 // cout << "left point detected = " << pt1 << endl;
@@ -429,13 +429,13 @@ protected:
         // waitKey( 10 );
         showImage( "result of Hough transform", res_Hough );
 #endif
-        shared_ptr<CurveFitting> fit_L_ptr = generateOneLine( left_lines, "left" );
-        shared_ptr<CurveFitting> fit_R_ptr = generateOneLine( right_lines, "right" );
+        shared_ptr<CurveFitting> fit_L_ptr = GenerateOneLine( left_lines, "left" );
+        shared_ptr<CurveFitting> fit_R_ptr = GenerateOneLine( right_lines, "right" );
         is_leftline_detected = ( fit_L_ptr != nullptr );
         is_rightline_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
-        drawPolygon( fit_L_ptr.get(), fit_R_ptr.get() );
+        DrawPolygon( fit_L_ptr.get(), fit_R_ptr.get() );
 #endif
         double left_point = findLinePoint( fit_L_ptr.get(), "left" );
         double right_point = findLinePoint( fit_R_ptr.get(), "right" );
@@ -449,6 +449,7 @@ protected:
         line( image_, Point2f( center_of_lane, 1.7 * height ), Point2f( width / 2, 2 * height ),
               Scalar( 104, 55, 255 ), 3 );
     }
+
     /* find the intersect point between lane and bottom line, used to compute the center of lane.
      * i.e., find x for y = ax^2 + bx + c where y == height of total image_
 	 * @param: pointer to the CurveFitting class
@@ -487,7 +488,7 @@ protected:
 	 * @param: the type of line: "right" or "left"
      * @return: the shared_ptr of CurveFitting class representing the parabola
      */
-    shared_ptr<CurveFitting> generateOneLine( vector<Point2f>& lines, string type_of_lines )
+    shared_ptr<CurveFitting> GenerateOneLine( vector<Point2f>& lines, string type_of_lines )
     {
         if( lines.empty() )
         {
@@ -511,7 +512,7 @@ protected:
             fit_ptr->solve( 10 );
             left_last_fparam = fit_ptr->param;
             // cout << "last left fitting parameter is " << left_last_fparam << endl;
-            drawPolynomial( fit_ptr.get(), type_of_lines );
+            DrawPolynomial( fit_ptr.get(), type_of_lines );
         }
         else
         {
@@ -519,7 +520,7 @@ protected:
             fit_ptr->solve( 10 );
             right_last_fparam = fit_ptr->param;
             // cout << "last right fitting parameter is " << right_last_fparam << endl;
-            drawPolynomial( fit_ptr.get(), type_of_lines );
+            DrawPolynomial( fit_ptr.get(), type_of_lines );
         }
         return fit_ptr;
     }
@@ -528,36 +529,36 @@ protected:
 	 * @param: pointer to the CurveFitting class
 	 * @param: type of lines
 	 */
-    void drawPolynomial( const CurveFitting* fit, string typeOfLines )
+    void DrawPolynomial( const CurveFitting* fit_ptr, string type_of_lines )
     {
-        if( !fit )
+        if( !fit_ptr )
             return;
         // Scalar color = Scalar( 104, 55, 255, 10 );
         Scalar color = Scalar( 255, 20, 20 );
 #ifdef DEBUG_MODE
-        color = typeOfLines == "right" ? Scalar( 100, 100, 255 ) : Scalar( 255, 100, 0 );
+        color = type_of_lines == "right" ? Scalar( 100, 100, 255 ) : Scalar( 255, 100, 0 );
         //        for( auto item : lines )
         //        {
         //            cout << "points is : " << item << endl;
         //        }
 #endif
         float start_point_x, end_point_x;
-        if( typeOfLines == "left" )
+        if( type_of_lines == "left" )
         {
             start_point_x = 0;
-            end_point_x = last_left_max + 0.1 * ( fit->max_x - last_left_max );
+            end_point_x = last_left_max + 0.1 * ( fit_ptr->max_x - last_left_max );
 
 #ifdef DEBUG_MODE
-            end_point_x = fit->max_x;
+            end_point_x = fit_ptr->max_x;
 #endif
             last_left_max = end_point_x;
         }
         else
         {
-            start_point_x = last_right_min + 0.1 * ( fit->min_x - last_right_min );
+            start_point_x = last_right_min + 0.1 * ( fit_ptr->min_x - last_right_min );
 
-#ifdef DEBUF_MODE
-            start_point_x = fit->min_x;
+#ifdef DEBUG_MODE
+            start_point_x = fit_ptr->min_x;
 #endif
 
             last_right_min = start_point_x;
@@ -566,7 +567,7 @@ protected:
         vector<Point2f> curvePoints;
         for( float x = start_point_x; x <= end_point_x; x += 5 )
         {
-            float y = fit->computeValue( x );
+            float y = fit_ptr->computeValue( x );
             curvePoints.push_back( Point2f{x, y} );
         }
 
@@ -581,11 +582,11 @@ protected:
     }
 
     // draw the areas that have been enclosed by 2 lines, only used for visualisation.
-    void drawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
+    void DrawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
     {
         if( !fitL || !fitR )
         {
-            cout << "no fit ptr" << endl;
+            cout << "no fit_ptr ptr" << endl;
             return;
         }
 
@@ -662,18 +663,18 @@ protected:
             {
                 if( static_object_ahead )
                     continue;
-                // for static object just brake
+                // for static object just need_brake
                 if( dist < max(2 * ego_velocity_ / 3.6, 10.) && abs( pos_y ) < 3 )
                 {
-                    brake = true;
+                    need_brake = true;
                     static_object_ahead = true;
                 }
                 else
-                    brake = false;
+                    need_brake = false;
             }
         }
         if( !static_object_ahead )
-            brake = false;
+            need_brake = false;
         cout << "number of objects is " << num_of_objects << endl;
         if( num_of_objects == 0 )
         {
