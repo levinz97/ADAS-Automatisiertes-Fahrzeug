@@ -1,0 +1,21 @@
+
+Für die Widerherstellbarkeit der Ergibnisse gibt es folgende
+Änderungen von ursprünglicher Umgebung:
+
+1.OpenCV 4.0.1 => 4.5.1 
+ Unterstützung von MobileNetV3 model für Objekterkennung.
+ Falls ENABLE_OBJECT_DETECTION auf 0 gesetzt (Objekterkennung durch Kamera ausgeschaltet) ist, 
+ läuft das Programm auch auf Version 4.0.1 und alle folgenden Änderungen sind unnötig. 
+
+2.Microsoft visual studio 2017, Projekt lane_assistant in Linker/Befehlszeile/Zusätzliche Optionen fügt "/FORCE:MULTIPLE" hinzu
+ da einige Funktionen in libtronis schon implementiert sind, muss man die zweite definitionen vermeiden.
+
+3.libboost v1.67 hinzufügt under D:\libboost, 
+  und in Microsoft visual studio 2017, Projekt lane_assistant in Linker/Allgemein/Zusätzliche Bibliotheksverzeichnisse fügt "D:\libboost" hinzu
+  weil ich in Uni Laptop keinen Schreibzugriff auf Disk C:\ habe.
+
+
+Strukturierter Code under:
+
+C:\Tronis\TronisSDK\apps\lane_assistant
+
