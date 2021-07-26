@@ -61,8 +61,9 @@ public:
         : steeringController( -0.003, -0.000005, -0.005 ),
           speedController( -0.3, -5e-6, -5 ),
           distanceController( -0.07, -5e-7, -5 )
-#if ENABLE_OBJECT_DETECTION 
-          ,object_detector( weightPath, configPath )
+#if ENABLE_OBJECT_DETECTION
+          ,
+          object_detector( weightPath, configPath )
 #endif
     {
         left_last_fparam = 0;
@@ -89,27 +90,26 @@ public:
     bool processData( tronis::CircularMultiQueuedSocket& socket )
     {
         if( send_steering_value )
-            SetSteeringInput( socket );
+            setSteeringInput( socket );
         if( send_throttle_value )
-            SetThrottleInput( socket );
+            setThrottleInput( socket );
         return true;
     }
 
 protected:
-    void SetThrottleInput( tronis::CircularMultiQueuedSocket& socket )
+    void setThrottleInput( tronis::CircularMultiQueuedSocket& socket )
     {
         double set_min_dist = 10;   // in meter
         double set_max_speed = 50;  // in km/h
-                                    // TODO: set_max_speed should = min(
-                                    // velocity_of_the_frontal_car, 50) if min_distance < threshold.
+        // TODO: set_max_speed should = min(velocity_of_the_frontal_car, 50) if min_distance <
+        // threshold.
 
         cout << "min_distance is " << min_distance << endl;
         cout << "ego_velocity is " << ego_velocity_ << endl;
 
         if( min_distance < set_min_dist && ego_velocity_ > 5 ||
             min_distance < set_min_dist + 5 && ego_velocity_ > 40 ||
-            min_distance < set_min_dist + 10 && ego_velocity_ > 45 ||
-            need_brake )
+            min_distance < set_min_dist + 10 && ego_velocity_ > 45 || need_brake )
         {
             // to close to the front car, need need_brake assist
             string prefix = "brake,";
@@ -127,10 +127,11 @@ protected:
             double speed_err = ego_velocity_ - set_max_speed;  // error in km/h
             speedController.UpdateErrorTerms( speed_err );
             throttle_input = speedController.OutputToActuator( 0.5, PRINT_VALUE_ACC );
+            distanceController.setZero();
         }
         else
         {
-			// there is a car ahead, controlled by both min_distance and set_max_speed
+            // there is a car ahead, controlled by both min_distance and set_max_speed
             double dist_err = set_min_dist - min_distance;
             if( dist_err > 0 )
                 dist_err *= 10;
@@ -161,7 +162,7 @@ protected:
         socket.send( tronis::SocketData( prefix + to_string( throttle_input ) ) );
     }
 
-    void SetSteeringInput( tronis::CircularMultiQueuedSocket& socket )
+    void setSteeringInput( tronis::CircularMultiQueuedSocket& socket )
     {
         // cout << "width_of_image = " << width << endl;
         double err = 0.;
@@ -429,13 +430,13 @@ protected:
         // waitKey( 10 );
         showImage( "result of Hough transform", res_Hough );
 #endif
-        shared_ptr<CurveFitting> fit_L_ptr = GenerateOneLine( left_lines, "left" );
-        shared_ptr<CurveFitting> fit_R_ptr = GenerateOneLine( right_lines, "right" );
+        shared_ptr<CurveFitting> fit_L_ptr = generateOneLine( left_lines, "left" );
+        shared_ptr<CurveFitting> fit_R_ptr = generateOneLine( right_lines, "right" );
         is_leftline_detected = ( fit_L_ptr != nullptr );
         is_rightline_detected = ( fit_R_ptr != nullptr );
 
 #ifdef DRAW_POLYGON
-        DrawPolygon( fit_L_ptr.get(), fit_R_ptr.get() );
+        drawPolygon( fit_L_ptr.get(), fit_R_ptr.get() );
 #endif
         double left_point = findLinePoint( fit_L_ptr.get(), "left" );
         double right_point = findLinePoint( fit_R_ptr.get(), "right" );
@@ -450,11 +451,12 @@ protected:
               Scalar( 104, 55, 255 ), 3 );
     }
 
-    /* find the intersect point between lane and bottom line, used to compute the center of lane.
+    /**
+     * find the intersect point between lane and bottom line, used to compute the center of lane.
      * i.e., find x for y = ax^2 + bx + c where y == height of total image_
-	 * @param: pointer to the CurveFitting class
-	 * @param: the type of line: "right" or "left"
-	 * @return: the x value (width) in picture, where right/left line intersect with the y == height
+     * @param: pointer to the CurveFitting class
+     * @param: the type of line: "right" or "left"
+     * @return: the x value (width) in picture, where right/left line intersect with the y == height
      */
     double findLinePoint( const CurveFitting* fit_ptr, string Type_of_lines )
     {
@@ -483,12 +485,13 @@ protected:
         // cout << "lane point = " << lane_point << endl;
         return lane_point;
     }
-    /* generate the second order parabola from points
-     * @param: the detected points from probabilistic Hough 
-	 * @param: the type of line: "right" or "left"
+    /**
+     * generate the second order parabola from points
+     * @param: the detected points from probabilistic Hough
+     * @param: the type of line: "right" or "left"
      * @return: the shared_ptr of CurveFitting class representing the parabola
      */
-    shared_ptr<CurveFitting> GenerateOneLine( vector<Point2f>& lines, string type_of_lines )
+    shared_ptr<CurveFitting> generateOneLine( vector<Point2f>& lines, string type_of_lines )
     {
         if( lines.empty() )
         {
@@ -512,7 +515,7 @@ protected:
             fit_ptr->solve( 10 );
             left_last_fparam = fit_ptr->param;
             // cout << "last left fitting parameter is " << left_last_fparam << endl;
-            DrawPolynomial( fit_ptr.get(), type_of_lines );
+            drawPolynomial( fit_ptr.get(), type_of_lines );
         }
         else
         {
@@ -520,16 +523,17 @@ protected:
             fit_ptr->solve( 10 );
             right_last_fparam = fit_ptr->param;
             // cout << "last right fitting parameter is " << right_last_fparam << endl;
-            DrawPolynomial( fit_ptr.get(), type_of_lines );
+            drawPolynomial( fit_ptr.get(), type_of_lines );
         }
         return fit_ptr;
     }
 
-    /* draw the detected parabola(left and right lines) on image_
-	 * @param: pointer to the CurveFitting class
-	 * @param: type of lines
-	 */
-    void DrawPolynomial( const CurveFitting* fit_ptr, string type_of_lines )
+    /**
+     * draw the detected parabola(left and right lines) on image_
+     * @param: pointer to the CurveFitting class
+     * @param: type of lines
+     */
+    void drawPolynomial( const CurveFitting* fit_ptr, string type_of_lines )
     {
         if( !fit_ptr )
             return;
@@ -582,7 +586,7 @@ protected:
     }
 
     // draw the areas that have been enclosed by 2 lines, only used for visualisation.
-    void DrawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
+    void drawPolygon( const CurveFitting* fitL, const CurveFitting* fitR )
     {
         if( !fitL || !fitR )
         {
@@ -648,6 +652,8 @@ protected:
             cout << "angle is " << angle << "\n";
             cout << "distance is " << dist << endl;
 #endif
+            if( actorName.find( "SnappyRoad" ) != string::npos )
+                continue;
 
             if( object.Type )
             {
@@ -664,7 +670,7 @@ protected:
                 if( static_object_ahead )
                     continue;
                 // for static object just need_brake
-                if( dist < max(2 * ego_velocity_ / 3.6, 10.) && abs( pos_y ) < 3 )
+                if( dist < max( 2 * ego_velocity_ / 3.6, 10. ) && abs( pos_y ) < 3 )
                 {
                     need_brake = true;
                     static_object_ahead = true;
@@ -796,7 +802,7 @@ public:
 
 protected:
     // Function to show an openCV image in a separate window
-    void showImage( std::string image_name, cv::Mat image )
+    void showImage( std::string image_name, cv::Mat& image )
     {
         cv::Mat out = image;  // shallow copy, why needed?
         if( image.type() == CV_32F || image.type() == CV_64F )
@@ -823,14 +829,14 @@ protected:
         image_ = tronis::image2Mat( image );
         //// reduce the frequency of camera to reduce computational effort
         //// every 15 frames
-        //static size_t cnt = 0;
+        // static size_t cnt = 0;
         //// cout << "cnt is " << cnt << endl;
-        //if( cnt == 15 )
+        // if( cnt == 15 )
         //{
         //    cnt = 0;
         //    return false;
         //}
-        //else
+        // else
         //{
         //    ++cnt;
         //}
@@ -862,7 +868,7 @@ int main( int argc, char** argv )
     uint32_t timeout_ms = 500;  // close grabber, if last received msg is older than this param
 
     LaneAssistant lane_assistant;
-
+	
     while( key_press != 'q' )
     {
         std::cout << "Wait for connection..." << std::endl;
