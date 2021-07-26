@@ -28,7 +28,11 @@ public:
      */
     double OutputToActuator( double d_limit, bool printValue );
 
-    void setZero();
+	/*set the i_error in pid controller to 0*/
+    inline void setZero()
+    {
+        i_error = p_error = 0;
+    }
 
 private:
     /**

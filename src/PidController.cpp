@@ -19,7 +19,4 @@ double PidController::OutputToActuator( double d_limit, bool printValue )
     return Kp * p_error + Ki * i_error + Kd * d_error;
 }
 
-void PidController::setZero()
-{
-    i_error = p_error = 0;
-}
+
